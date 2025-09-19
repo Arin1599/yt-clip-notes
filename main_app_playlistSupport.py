@@ -228,27 +228,46 @@ class PlaylistDownloadThread(QThread):
     def _merge_streams(self, video_file, audio_file, output_path):
         """Merge video and audio streams."""
         try:
-            subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
-        except:
-            return False
+            # Check if FFmpeg is installed
+            try:
+                subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                print("FFmpeg not found. Please install FFmpeg.")
+                return False
 
-        cmd = [
-            'ffmpeg', '-i', video_file, '-i', audio_file,
-            '-c:v', 'copy', '-c:a', 'aac', '-shortest', '-y', output_path
-        ]
+            # Set up the FFmpeg command
+            cmd = [
+                'ffmpeg', '-i', video_file, '-i', audio_file,
+                '-c:v', 'copy', '-c:a', 'aac', '-shortest',
+                '-y', output_path
+            ]
 
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            
-            if result.returncode == 0:
+            # Run FFmpeg with progress monitoring
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                bufsize=1
+            )
+
+            # Wait for the process to complete
+            stdout, stderr = process.communicate()
+
+            # Check if merge was successful
+            if process.returncode == 0:
                 try:
+                    # Clean up temporary files
                     os.remove(video_file)
                     os.remove(audio_file)
-                except:
-                    pass
+                except Exception:
+                    pass  # Ignore cleanup errors
                 return True
-            return False
-        except:
+            else:
+                print(f"FFmpeg error: {stderr}")
+                return False
+        except Exception as e:
+            print(f"Merge failed: {str(e)}")
             return False
 
     def _progress_hook(self, d, video_id, stream_type=None):
@@ -390,28 +409,54 @@ class SingleVideoDownloadThread(QThread):
 
     def _merge_streams(self, video_file, audio_file):
         try:
-            subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            raise Exception("FFmpeg not found. Please install FFmpeg.")
+            # First check if FFmpeg is installed
+            try:
+                subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                raise Exception("FFmpeg not found. Please install FFmpeg.")
 
-        cmd = [
-            'ffmpeg', '-i', video_file, '-i', audio_file,
-            '-c:v', 'copy', '-c:a', 'aac', '-shortest', '-y', self.output_path
-        ]
+            # Set up the FFmpeg command
+            cmd = [
+                'ffmpeg', '-i', video_file, '-i', audio_file,
+                '-c:v', 'copy', '-c:a', 'aac', '-shortest',
+                '-y', self.output_path
+            ]
 
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            
-            if result.returncode == 0:
+            # Update status
+            self.status_update.emit("🔄 Merging video and audio streams...")
+            self.progress.emit(90)  # Show progress at 90%
+
+            # Run FFmpeg with progress monitoring
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                bufsize=1
+            )
+
+            # Wait for the process to complete while allowing GUI updates
+            stdout, stderr = process.communicate()
+
+            # Check if merge was successful
+            if process.returncode == 0:
                 try:
+                    # Clean up temporary files
                     os.remove(video_file)
                     os.remove(audio_file)
                 except Exception:
-                    pass
+                    pass  # Ignore cleanup errors
+                
+                self.status_update.emit("✅ Merge completed successfully!")
+                self.progress.emit(100)
                 return True
             else:
-                raise Exception(f"FFmpeg error: {result.stderr}")
+                error_msg = f"FFmpeg error: {stderr}"
+                self.status_update.emit("❌ Merge failed!")
+                raise Exception(error_msg)
+
         except Exception as e:
+            self.status_update.emit(f"❌ Merge failed: {str(e)}")
             raise Exception(f"Merge failed: {str(e)}")
 
     def _download_single_format(self):
@@ -587,9 +632,12 @@ class YouTubeClipper(QWidget):
         self.stop_btn = QPushButton("🛑 Stop Download")
         self.stop_btn.clicked.connect(self.stop_download)
         self.stop_btn.setEnabled(False)
+        self.load_local_btn = QPushButton("📂 Load Local Video")
+        self.load_local_btn.clicked.connect(self.browse_local_video)
         
         download_layout.addWidget(self.download_btn)
         download_layout.addWidget(self.stop_btn)
+        download_layout.addWidget(self.load_local_btn)
         
         url_layout.addLayout(url_input_layout)
         url_layout.addLayout(download_layout)
@@ -681,12 +729,31 @@ class YouTubeClipper(QWidget):
 
         # Timestamp Controls
         ts_layout = QHBoxLayout()
+        
+        # Start time controls
+        start_group = QHBoxLayout()
+        self.start_time_input = QLineEdit()
+        self.start_time_input.setPlaceholderText("HH:MM:SS")
+        self.start_time_input.setMaximumWidth(100)
         set_start_btn = QPushButton("⏱ Set Start")
         set_start_btn.clicked.connect(self.set_start_time)
+        start_group.addWidget(QLabel("Start:"))
+        start_group.addWidget(self.start_time_input)
+        start_group.addWidget(set_start_btn)
+        
+        # End time controls
+        end_group = QHBoxLayout()
+        self.end_time_input = QLineEdit()
+        self.end_time_input.setPlaceholderText("HH:MM:SS")
+        self.end_time_input.setMaximumWidth(100)
         set_end_btn = QPushButton("📌 Set End & Save Clip")
         set_end_btn.clicked.connect(self.set_end_time)
-        ts_layout.addWidget(set_start_btn)
-        ts_layout.addWidget(set_end_btn)
+        end_group.addWidget(QLabel("End:"))
+        end_group.addWidget(self.end_time_input)
+        end_group.addWidget(set_end_btn)
+        
+        ts_layout.addLayout(start_group)
+        ts_layout.addLayout(end_group)
         layout.addLayout(ts_layout)
 
         # Clip List
@@ -1247,9 +1314,25 @@ class YouTubeClipper(QWidget):
     def set_start_time(self):
         """Set clip start time."""
         try:
-            pos = self.media_player.position() / 1000
-            self.current_start = pos
-            QMessageBox.information(self, "Start Set", f"Start time set at {format_timespan(pos)}")
+            # First check if there's manual input
+            manual_time = self.start_time_input.text().strip()
+            if manual_time:
+                parsed_time = self.parse_timestamp(manual_time)
+                if parsed_time is not None:
+                    # Validate that the time is within video duration
+                    if parsed_time > self.media_player.duration() / 1000:
+                        QMessageBox.warning(self, "Error", "Start time exceeds video duration!")
+                        return
+                    self.current_start = parsed_time
+                else:
+                    return  # Error was already shown by parse_timestamp
+            else:
+                # Use current position if no manual input
+                pos = self.media_player.position() / 1000
+                self.current_start = pos
+                self.start_time_input.setText(format_timespan(pos))
+            
+            QMessageBox.information(self, "Start Set", f"Start time set at {format_timespan(self.current_start)}")
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Failed to set start time: {str(e)}")
 
@@ -1259,8 +1342,22 @@ class YouTubeClipper(QWidget):
             if self.current_start is None:
                 QMessageBox.warning(self, "Error", "Set start time first!")
                 return
+
+            # Check for manual input
+            manual_time = self.end_time_input.text().strip()
+            if manual_time:
+                end_pos = self.parse_timestamp(manual_time)
+                if end_pos is None:
+                    return  # Error was already shown by parse_timestamp
+                # Validate that the time is within video duration
+                if end_pos > self.media_player.duration() / 1000:
+                    QMessageBox.warning(self, "Error", "End time exceeds video duration!")
+                    return
+            else:
+                # Use current position if no manual input
+                end_pos = self.media_player.position() / 1000
+                self.end_time_input.setText(format_timespan(end_pos))
             
-            end_pos = self.media_player.position() / 1000
             if end_pos <= self.current_start:
                 QMessageBox.warning(self, "Error", "End time must be greater than start time!")
                 return
@@ -1345,6 +1442,49 @@ class YouTubeClipper(QWidget):
         """Toggle cleanup setting."""
         self.clean_video = bool(state)
 
+    def parse_timestamp(self, timestamp_str):
+        """Parse a timestamp string in HH:MM:SS format to seconds."""
+        try:
+            # Handle empty input
+            if not timestamp_str.strip():
+                return None
+
+            # Split the timestamp into hours, minutes, and seconds
+            parts = timestamp_str.split(':')
+            
+            if len(parts) == 3:  # HH:MM:SS
+                hours, minutes, seconds = map(float, parts)
+            elif len(parts) == 2:  # MM:SS
+                hours = 0
+                minutes, seconds = map(float, parts)
+            elif len(parts) == 1:  # SS
+                hours = 0
+                minutes = 0
+                seconds = float(parts[0])
+            else:
+                raise ValueError("Invalid time format")
+
+            # Convert to seconds
+            total_seconds = hours * 3600 + minutes * 60 + seconds
+            
+            # Validate the timestamp is not negative
+            if total_seconds < 0:
+                raise ValueError("Time cannot be negative")
+                
+            return total_seconds
+            
+        except Exception as e:
+            QMessageBox.warning(None, "Invalid Time Format", 
+                              "Please enter time in HH:MM:SS, MM:SS, or SS format")
+            return None
+
+    def update_timestamp_display(self):
+        """Update the timestamp input fields with current video position."""
+        if self.current_start is not None:
+            self.start_time_input.setText(format_timespan(self.current_start))
+        current_pos = self.media_player.position() / 1000
+        self.end_time_input.setText(format_timespan(current_pos))
+
     def update_position(self):
         """Update position display during playback."""
         try:
@@ -1353,9 +1493,26 @@ class YouTubeClipper(QWidget):
                 self.slider.setValue(position)
                 current_seconds = position / 1000
                 self.current_time_label.setText(format_timespan(current_seconds))
+                
+                # Update end time input if no manual entry
+                if not self.end_time_input.hasFocus():
+                    self.end_time_input.setText(format_timespan(current_seconds))
         except Exception as e:
             print(f"Error updating position: {e}")
 
+    def browse_local_video(self):
+        """Browse and load a local video file."""
+        file_dialog = QFileDialog()
+        video_path, _ = file_dialog.getOpenFileName(
+            self,
+            "Select Video File",
+            "",
+            "Video Files (*.mp4 *.avi *.mkv *.mov *.wmv);;All Files (*.*)"
+        )
+        
+        if video_path:
+            self.load_video(video_path)
+            
     def _check_and_load_existing_video(self):
         """Check for existing video and load it."""
         try:
